@@ -1,284 +1,349 @@
-* {
-  box-sizing: border-box;
-}
+import { useEffect, useMemo, useState } from 'react';
+import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
+import L from 'leaflet';
+import { diveSites, type DiveSite } from './data/diveSites';
+import { fetchSiteConditions, type SiteConditionSnapshot } from './lib/conditions';
+import 'leaflet/dist/leaflet.css';
 
-:root {
-  font-family: Inter, 'Segoe UI', sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
-  color: #e2e8f0;
-  background: #020817;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
+const defaultCenter: [number, number] = [33.4, -118.3];
+const rarityOrder = ['Common', 'Uncommon', 'Rare', 'Epic', 'Legendary'] as const;
 
-html, body, #root {
-  margin: 0;
-  min-height: 100%;
-  width: 100%;
-  background:
-    radial-gradient(circle at top, rgba(14, 116, 144, 0.35), transparent 30%),
-    #020817;
-}
+const conditionColors: Record<string, string> = {
+  Excellent: '#10b981',
+  Good: '#22c55e',
+  Fair: '#f59e0b',
+  Poor: '#f97316',
+  Unsafe: '#ef4444',
+};
 
-body {
-  min-height: 100vh;
-}
+const rarityColors: Record<string, string> = {
+  Common: '#22c55e',
+  Uncommon: '#38bdf8',
+  Rare: '#a78bfa',
+  Epic: '#f59e0b',
+  Legendary: '#f43f5e',
+};
 
-button, input {
-  font: inherit;
-}
+const getConditionColor = (score: number) => {
+  if (score >= 85) return '#10b981';
+  if (score >= 70) return '#22c55e';
+  if (score >= 55) return '#f59e0b';
+  if (score >= 35) return '#f97316';
+  return '#ef4444';
+};
 
-.app-shell {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 32px 20px 60px;
-}
+const createMarkerIcon = (color: string) =>
+  L.divIcon({
+    className: 'custom-div-icon',
+    html: `<span style="background:${color};"></span>`,
+    iconSize: [14, 14],
+    iconAnchor: [7, 7],
+  });
 
-.topbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-  margin-bottom: 24px;
-}
+const ConditionPill = ({ label }: { label: string }) => (
+  <span className="condition-pill" style={{ backgroundColor: conditionColors[label] || '#64748b' }}>
+    {label}
+  </span>
+);
 
-.eyebrow,
-.section-kicker {
-  margin: 0 0 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  font-size: 0.72rem;
-  color: #7dd3fc;
-}
+const RarityBadge = ({ rarity }: { rarity: string }) => (
+  <span
+    className="rarity-badge"
+    style={{ backgroundColor: rarityColors[rarity] || '#64748b' }}
+  >
+    {rarity}
+  </span>
+);
 
-h1, h2, h3, h4, p {
-  margin-top: 0;
-}
+const InfoTabs = ({ site }: { site: DiveSite }) => {
+  const [activeTab, setActiveTab] = useState<'environment' | 'species'>('environment');
 
-h1 {
-  font-size: clamp(2rem, 4vw, 3.2rem);
-  margin-bottom: 0;
-}
+  return (
+    <div className="detail-tabs">
+      <div className="detail-tab-header">
+        <button
+          type="button"
+          className={activeTab === 'environment' ? 'tab-button active' : 'tab-button'}
+          onClick={() => setActiveTab('environment')}
+        >
+          Environment
+        </button>
+        <button
+          type="button"
+          className={activeTab === 'species' ? 'tab-button active' : 'tab-button'}
+          onClick={() => setActiveTab('species')}
+        >
+          Species
+        </button>
+      </div>
 
-.status-box {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  background: rgba(15, 23, 42, 0.8);
-  border: 1px solid rgba(148, 163, 184, 0.25);
-  border-radius: 999px;
-  padding: 0.7rem 1rem;
-  color: #cbd5e1;
-}
+      {activeTab === 'environment' ? (
+        <div className="detail-content">
+          <div className="detail-row"><strong>Depth:</strong> {site.depth}</div>
+          <div className="detail-row"><strong>Difficulty:</strong> {site.difficulty}</div>
+          <div className="detail-row"><strong>Region:</strong> {site.region}</div>
+          <div className="env-list-wrap">
+            {site.environment.map((env) => (
+              <span key={env} className="env-chip">{env}</span>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="species-grid">
+          {site.species.map((species) => (
+            <div key={species.id} className="species-card">
+              <RarityBadge rarity={species.rarity} />
+              <img src={species.imageUrl} alt={species.name} className="species-image" />
+              <div className="species-name">{species.name}</div>
+              <div className="species-description">{species.description}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
 
-.live-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: #22c55e;
-  box-shadow: 0 0 0 5px rgba(34, 197, 94, 0.18);
-}
+const MarkerCluster = ({ onSelect }: { onSelect: (siteId: string) => void }) => {
+  const map = useMap();
 
-.hero-card,
-.map-card,
-.site-card {
-  background: rgba(15, 23, 42, 0.82);
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 22px;
-  box-shadow: 0 24px 50px rgba(15, 23, 42, 0.35);
-}
+  useEffect(() => {
+    if (!map) return;
+  }, [map]);
 
-.hero-card {
-  display: grid;
-  grid-template-columns: 1.5fr 1fr;
-  gap: 24px;
-  padding: 26px;
-  margin-bottom: 28px;
-}
+  return null;
+};
 
-.summary-copy {
-  margin-top: 14px;
-  color: #cbd5e1;
-  max-width: 60ch;
-}
+export const App = () => {
+  const [siteData, setSiteData] = useState<Record<string, SiteConditionSnapshot>>({});
+  const [loading, setLoading] = useState(true);
+  const [selectedSiteId, setSelectedSiteId] = useState(diveSites[0]?.id ?? '');
 
-.metrics-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(120px, 1fr));
-  gap: 14px;
-}
+  useEffect(() => {
+    let active = true;
 
-.metric-card {
-  background: rgba(15, 118, 110, 0.08);
-  border: 1px solid rgba(45, 212, 191, 0.16);
-  border-radius: 16px;
-  padding: 18px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
+    const loadConditions = async () => {
+      const results = await Promise.all(
+        diveSites.map(async (site) => ({
+          site,
+          snapshot: await fetchSiteConditions(site),
+        })),
+      );
 
-.metric-card span {
-  font-size: 0.8rem;
-  color: #cbd5e1;
-}
+      if (!active) return;
 
-.metric-card strong {
-  font-size: 1.4rem;
-  color: #f8fafc;
-}
+      const nextData = Object.fromEntries(
+        results.map(({ site, snapshot }) => [site.id, snapshot]),
+      );
 
-.map-card {
-  padding: 20px;
-  margin-bottom: 28px;
-}
+      setSiteData(nextData);
+      setLoading(false);
+    };
 
-.section-header {
-  margin-bottom: 14px;
-}
+    loadConditions();
 
-.section-header h3 {
-  margin-bottom: 0;
-  font-size: 1.4rem;
-}
+    return () => {
+      active = false;
+    };
+  }, []);
 
-.site-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 18px;
-}
+  const selectedSite = useMemo(
+    () => diveSites.find((site) => site.id === selectedSiteId) ?? diveSites[0],
+    [selectedSiteId],
+  );
 
-.site-card {
-  padding: 20px;
-}
+  const featuredSite = useMemo(() => {
+    const values = Object.values(siteData);
+    if (!values.length) return null;
+    return values.sort((a, b) => b.conditions.score - a.conditions.score)[0];
+  }, [siteData]);
 
-.site-card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-}
+  const selectedSnapshot = siteData[selectedSite?.id ?? ''];
 
-.site-card h4 {
-  margin-bottom: 2px;
-  font-size: 1.1rem;
-}
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Southern California diving</p>
+          <h1>Dive Conditions Dashboard</h1>
+        </div>
+        <div className="status-box">
+          <span className="live-dot" />
+          {loading ? 'Loading live marine data' : 'Data refreshed'}
+        </div>
+      </header>
 
-.site-card span {
-  color: #a5b4fc;
-  font-size: 0.8rem;
-}
+      <main>
+        <section className="hero-card">
+          <div>
+            <p className="section-kicker">Best window today</p>
+            {featuredSite ? (
+              <>
+                <h2>{featuredSite.site.name}</h2>
+                <ConditionPill label={featuredSite.conditions.overall} />
+                <p className="summary-copy">{featuredSite.conditions.note}</p>
+              </>
+            ) : (
+              <p className="summary-copy">Fetching the latest conditions for SoCal dive sites.</p>
+            )}
+          </div>
 
-.site-card p {
-  color: #cbd5e1;
-  margin-bottom: 16px;
-}
+          <div className="metrics-grid">
+            <div className="metric-card">
+              <span>Visibility</span>
+              <strong>{featuredSite ? `${featuredSite.conditions.visibility}%` : '--'}</strong>
+            </div>
+            <div className="metric-card">
+              <span>Surf</span>
+              <strong>{featuredSite ? `${featuredSite.conditions.surf}%` : '--'}</strong>
+            </div>
+            <div className="metric-card">
+              <span>Water Temp</span>
+              <strong>{featuredSite ? `${featuredSite.marine.waterTemp.toFixed(0)}°F` : '--'}</strong>
+            </div>
+            <div className="metric-card">
+              <span>Tide</span>
+              <strong>{featuredSite ? featuredSite.tide.state : '--'}</strong>
+            </div>
+          </div>
+        </section>
 
-.site-details {
-  list-style: none;
-  padding: 0;
-  margin: 0 0 16px;
-  display: grid;
-  gap: 8px;
-  color: #e2e8f0;
-}
+        <section className="map-card">
+          <div className="section-header">
+            <h3>Popular dive locations</h3>
+          </div>
+          <MapContainer
+            center={defaultCenter}
+            zoom={7}
+            scrollWheelZoom
+            style={{ height: '520px', width: '100%', borderRadius: '18px' }}
+          >
+            <TileLayer
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            />
+            <MarkerCluster onSelect={setSelectedSiteId} />
 
-.site-details li {
-  font-size: 0.92rem;
-}
+            {diveSites.map((site) => {
+              const snapshot = siteData[site.id];
+              const conditionLabel = snapshot?.conditions.overall ?? 'Fair';
+              const conditionColor = snapshot
+                ? getConditionColor(snapshot.conditions.score)
+                : '#64748b';
 
-.site-details strong {
-  color: #7dd3fc;
-}
+              return (
+                <Marker
+                  key={site.id}
+                  position={[site.lat, site.lon]}
+                  icon={createMarkerIcon(conditionColor)}
+                  eventHandlers={{
+                    click: () => setSelectedSiteId(site.id),
+                  }}
+                >
+                  <Popup>
+                    <div className="popup-card">
+                      <strong>{site.name}</strong>
+                      <div>{site.region}</div>
+                      <div className="popup-meta">{site.depth}</div>
+                      <ConditionPill label={conditionLabel} />
+                      <div className="popup-meta">
+                        {snapshot ? `${snapshot.marine.waveHeight.toFixed(1)} ft swell` : 'Checking conditions'}
+                      </div>
+                    </div>
+                  </Popup>
+                </Marker>
+              );
+            })}
+          </MapContainer>
+        </section>
 
-.score-bar-wrap {
-  height: 10px;
-  border-radius: 999px;
-  background: rgba(100, 116, 139, 0.2);
-  overflow: hidden;
-  margin-bottom: 10px;
-}
+        <section className="site-grid">
+          {diveSites.map((site) => {
+            const snapshot = siteData[site.id];
+            const conditions = snapshot?.conditions;
 
-.score-bar {
-  height: 100%;
-  border-radius: inherit;
-}
+            return (
+              <article
+                key={site.id}
+                className={selectedSite?.id === site.id ? 'site-card selected' : 'site-card'}
+                onClick={() => setSelectedSiteId(site.id)}
+              >
+                <div className="site-card-header">
+                  <div>
+                    <h4>{site.name}</h4>
+                    <span>{site.region}</span>
+                  </div>
+                  {conditions ? <ConditionPill label={conditions.overall} /> : <ConditionPill label="Fair" />}
+                </div>
 
-.score-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 0.9rem;
-  color: #cbd5e1;
-}
+                <p>{site.description}</p>
 
-.condition-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.35rem 0.7rem;
-  border-radius: 999px;
-  color: white;
-  font-size: 0.75rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-}
+                <ul className="site-details">
+                  <li><strong>Depth:</strong> {site.depth}</li>
+                  <li><strong>Difficulty:</strong> {site.difficulty}</li>
+                  <li><strong>Water:</strong> {snapshot ? `${snapshot.marine.waterTemp.toFixed(0)}°F` : '--'}</li>
+                  <li><strong>Tide:</strong> {snapshot ? snapshot.tide.state : '--'}</li>
+                </ul>
 
-.popup-card {
-  color: #0f172a;
-  min-width: 170px;
-}
+                <div className="score-bar-wrap">
+                  <div
+                    className="score-bar"
+                    style={{
+                      width: `${conditions ? conditions.score : 50}%`,
+                      background: conditions ? getConditionColor(conditions.score) : '#64748b',
+                    }}
+                  />
+                </div>
 
-.popup-meta {
-  margin-top: 6px;
-  color: #334155;
-  font-size: 0.8rem;
-}
+                <div className="score-row">
+                  <span>Score</span>
+                  <strong>{conditions ? conditions.score : '--'}/100</strong>
+                </div>
+              </article>
+            );
+          })}
+        </section>
 
-.custom-div-icon {
-  background: transparent;
-  border: none;
-}
+        {selectedSite && (
+          <aside className="detail-panel">
+            <div className="detail-panel-header">
+              <div>
+                <p className="section-kicker">Dive site detail</p>
+                <h3>{selectedSite.name}</h3>
+              </div>
+              {selectedSnapshot ? (
+                <ConditionPill label={selectedSnapshot.conditions.overall} />
+              ) : (
+                <ConditionPill label="Fair" />
+              )}
+            </div>
 
-.custom-div-icon span {
-  display: block;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.85);
-  box-shadow: 0 0 0 6px rgba(15, 23, 42, 0.2);
-}
+            <div className="detail-panel-body">
+              <div className="detail-metrics">
+                <div className="detail-metric">
+                  <label>Visibility</label>
+                  <strong>{selectedSnapshot ? `${selectedSnapshot.conditions.visibility}%` : '--'}</strong>
+                </div>
+                <div className="detail-metric">
+                  <label>Surf</label>
+                  <strong>{selectedSnapshot ? `${selectedSnapshot.conditions.surf}%` : '--'}</strong>
+                </div>
+                <div className="detail-metric">
+                  <label>Water</label>
+                  <strong>{selectedSnapshot ? `${selectedSnapshot.marine.waterTemp.toFixed(0)}°F` : '--'}</strong>
+                </div>
+                <div className="detail-metric">
+                  <label>Tide</label>
+                  <strong>{selectedSnapshot ? selectedSnapshot.tide.state : '--'}</strong>
+                </div>
+              </div>
 
-.leaflet-container {
-  background: #0f172a;
-}
-
-@media (max-width: 760px) {
-  .topbar,
-  .hero-card {
-    grid-template-columns: 1fr;
-    display: grid;
-  }
-
-  .hero-card {
-    padding: 18px;
-  }
-
-  .metrics-grid {
-    grid-template-columns: repeat(2, minmax(120px, 1fr));
-  }
-}
-
-@media (max-width: 560px) {
-  .app-shell {
-    padding: 20px 12px 50px;
-  }
-
-  .metrics-grid {
-    grid-template-columns: 1fr;
-  }
-}
+              <p className="detail-description">{selectedSite.description}</p>
+              <InfoTabs site={selectedSite} />
+            </div>
+          </aside>
+        )}
+      </main>
+    </div>
+  );
+};
